@@ -1,0 +1,34 @@
+# Experiment results (untracked — lives on branch only)
+results.tsv
+
+# Run logs
+run.log
+/tmp/
+
+# Build artifacts
+src/c/*.eap
+src/c/*.o
+src/rust/target/
+*.eap
+
+# Docker
+.docker/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Camera credentials
+.env
+camera_pass.txt
