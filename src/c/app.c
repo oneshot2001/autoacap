@@ -3,54 +3,79 @@
  *
  * Uses VDO for video capture and Larod for ML inference on ARTPEC-9 DLPU.
  * Detects persons using SSD MobileNet V2 (INT8 quantized).
+ * Uses Larod's built-in cpu-proc preprocessing for NV12→RGB conversion.
  *
  * This file is modified by the autonomous research agent.
  * The agent optimizes for maximum FPS while maintaining mAP >= 0.40.
+ *
+ * Based on Axis ACAP Native SDK object-detection example.
  */
 
+#include <errno.h>
+#include <fcntl.h>
+#include <math.h>
+#include <poll.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <signal.h>
+#include <sys/mman.h>
+#include <sys/time.h>
+#include <syslog.h>
 #include <time.h>
 #include <unistd.h>
-#include <math.h>
 
-/* Axis ACAP APIs */
-#include <vdo-stream.h>
-#include <vdo-frame.h>
+#include <glib.h>
 #include <vdo-buffer.h>
+#include <vdo-channel.h>
+#include <vdo-error.h>
+#include <vdo-frame.h>
+#include <vdo-map.h>
+#include <vdo-stream.h>
+#include <vdo-types.h>
+
 #include <larod.h>
 
-/* Detection output format */
-#define MAX_DETECTIONS 100
+/* ─── Configuration ─────────────────────────────────────────────────────── */
+
+#define MODEL_PATH       "/usr/local/packages/autoacap/model/ssd_mobilenet_v2_int8.tflite"
+#define METRICS_PATH     "/tmp/autoacap_metrics.json"
+#define DETECTIONS_PATH  "/tmp/autoacap_detections.json"
+
+#define STREAM_WIDTH     640
+#define STREAM_HEIGHT    480
+#define STREAM_FPS       15.0
+
 #define CONFIDENCE_THRESHOLD 0.5f
-#define NMS_THRESHOLD 0.45f
-#define INPUT_WIDTH 300
-#define INPUT_HEIGHT 300
-#define PERSON_CLASS_ID 1
+#define PERSON_CLASS_ID      1
+#define MAX_DETECTIONS       100
+#define MAX_LATENCIES        2000
 
-/* Model path on camera */
-#define MODEL_PATH "/usr/local/packages/autoacap/model/ssd_mobilenet_v2_int8.tflite"
+/* DLPU device name for ARTPEC-8/9 */
+#define LAROD_DEVICE_NAME "axis-a8-dlpu"
+/* Preprocessing device */
+#define PP_DEVICE_NAME    "cpu-proc"
 
-/* Metrics output path */
-#define METRICS_PATH "/tmp/autoacap_metrics.json"
-#define DETECTIONS_PATH "/tmp/autoacap_detections.json"
+#define MAX_POWER_RETRIES 50
+
+/* ─── Types ─────────────────────────────────────────────────────────────── */
 
 typedef struct {
-    float x, y, w, h;
+    float y_min, x_min, y_max, x_max;
     float confidence;
     int class_id;
 } Detection;
 
 typedef struct {
-    double fps;
-    double *latencies_ms;
-    int num_latencies;
-    int capacity;
-} Metrics;
+    int fd;
+    void *data;
+    size_t size;
+    larodTensorDataType datatype;
+} TensorOutput;
 
-static volatile int running = 1;
+/* ─── Globals ───────────────────────────────────────────────────────────── */
+
+static volatile sig_atomic_t running = 1;
 
 static void signal_handler(int sig) {
     (void)sig;
@@ -63,343 +88,600 @@ static double get_time_ms(void) {
     return ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
 }
 
-/**
- * Initialize VDO stream for video capture.
- * Returns VdoStream pointer or NULL on failure.
- */
-static VdoStream *init_vdo_stream(void) {
+/* ─── VDO Stream Setup ──────────────────────────────────────────────────── */
+
+typedef struct {
+    VdoStream *stream;
+    int poll_fd;
+    unsigned int width;
+    unsigned int height;
+    unsigned int pitch;
+    VdoFormat format;
+} VdoProvider;
+
+static VdoProvider *vdo_provider_new(void) {
     GError *error = NULL;
+    VdoProvider *vp = calloc(1, sizeof(VdoProvider));
+    if (!vp) return NULL;
+
     VdoMap *settings = vdo_map_new();
+    vdo_map_set_uint32(settings, "format", VDO_FORMAT_YUV);
+    vdo_map_set_uint32(settings, "width", STREAM_WIDTH);
+    vdo_map_set_uint32(settings, "height", STREAM_HEIGHT);
+    vdo_map_set_double(settings, "framerate", STREAM_FPS);
+    vdo_map_set_uint32(settings, "buffer.count", 2);
+    vdo_map_set_boolean(settings, "socket.blocking", FALSE);
 
-    vdo_map_set_uint32(settings, "format", VDO_FORMAT_YUV_NV12);
-    vdo_map_set_uint32(settings, "width", 640);
-    vdo_map_set_uint32(settings, "height", 480);
-    vdo_map_set_uint32(settings, "framerate", 15);
-
-    VdoStream *stream = vdo_stream_new(settings, NULL, &error);
+    vp->stream = vdo_stream_new(settings, NULL, &error);
     g_object_unref(settings);
 
-    if (!stream) {
-        fprintf(stderr, "Failed to create VDO stream: %s\n",
-                error ? error->message : "unknown error");
+    if (!vp->stream) {
+        syslog(LOG_ERR, "Failed to create VDO stream: %s",
+               error ? error->message : "unknown");
         if (error) g_error_free(error);
+        free(vp);
         return NULL;
     }
 
-    if (!vdo_stream_start(stream, &error)) {
-        fprintf(stderr, "Failed to start VDO stream: %s\n",
-                error ? error->message : "unknown error");
+    /* Read actual stream info */
+    VdoMap *info = vdo_stream_get_info(vp->stream, &error);
+    if (info) {
+        vp->width = vdo_map_get_uint32(info, "width", STREAM_WIDTH);
+        vp->height = vdo_map_get_uint32(info, "height", STREAM_HEIGHT);
+        vp->pitch = vdo_map_get_uint32(info, "pitch", vp->width);
+        vp->format = vdo_map_get_uint32(info, "format", VDO_FORMAT_YUV);
+        g_object_unref(info);
+    } else {
+        vp->width = STREAM_WIDTH;
+        vp->height = STREAM_HEIGHT;
+        vp->pitch = STREAM_WIDTH;
+        vp->format = VDO_FORMAT_YUV;
+    }
+
+    if (!vdo_stream_start(vp->stream, &error)) {
+        syslog(LOG_ERR, "Failed to start VDO stream: %s",
+               error ? error->message : "unknown");
         if (error) g_error_free(error);
-        g_object_unref(stream);
+        g_object_unref(vp->stream);
+        free(vp);
         return NULL;
     }
 
-    return stream;
+    vp->poll_fd = vdo_stream_get_fd(vp->stream, &error);
+    if (vp->poll_fd < 0) {
+        syslog(LOG_ERR, "Failed to get stream fd");
+        g_object_unref(vp->stream);
+        free(vp);
+        return NULL;
+    }
+
+    syslog(LOG_INFO, "VDO stream: %ux%u pitch=%u format=%u",
+           vp->width, vp->height, vp->pitch, vp->format);
+
+    return vp;
 }
 
-/**
- * Initialize Larod inference session.
- * Loads the TFLite model onto the DLPU.
- */
-static larodConnection *init_larod(larodModel **model_out,
-                                    larodTensor **input_tensor_out,
-                                    larodTensor **output_tensors_out,
-                                    int *num_outputs) {
-    larodError *error = NULL;
+static VdoBuffer *vdo_provider_get_frame(VdoProvider *vp) {
+    GError *error = NULL;
+    struct pollfd pfd = { .fd = vp->poll_fd, .events = POLLIN };
 
-    larodConnection *conn = larodConnect(&error);
-    if (!conn) {
-        fprintf(stderr, "Failed to connect to larod: %s\n",
-                error ? error->msg : "unknown");
-        larodClearError(&error);
-        return NULL;
-    }
+    while (running) {
+        int ret;
+        do {
+            ret = poll(&pfd, 1, 1000); /* 1s timeout */
+        } while (ret == -1 && errno == EINTR);
 
-    /* Load model onto DLPU (chip 12 for ARTPEC-8/9) */
-    const larodDevice *device = larodGetDevice(conn, "axis-a8-dlpu", 0, &error);
-    if (!device) {
-        fprintf(stderr, "Failed to get DLPU device: %s\n",
-                error ? error->msg : "unknown");
-        larodClearError(&error);
-        larodDisconnect(&conn, NULL);
-        return NULL;
-    }
+        if (ret <= 0) continue;
 
-    int model_fd = open(MODEL_PATH, O_RDONLY);
-    if (model_fd < 0) {
-        fprintf(stderr, "Failed to open model file: %s\n", MODEL_PATH);
-        larodDisconnect(&conn, NULL);
-        return NULL;
-    }
+        VdoBuffer *buf = vdo_stream_get_buffer(vp->stream, &error);
+        if (buf) return buf;
 
-    larodModel *model = larodLoadModel(conn, model_fd, device,
-                                        LAROD_ACCESS_PRIVATE, "autoacap", NULL, &error);
-    close(model_fd);
-
-    if (!model) {
-        fprintf(stderr, "Failed to load model: %s\n",
-                error ? error->msg : "unknown");
-        larodClearError(&error);
-        larodDisconnect(&conn, NULL);
-        return NULL;
-    }
-
-    /* Get input/output tensor info */
-    size_t num_inputs = 0;
-    larodTensor **inputs = larodGetModelInputs(model, &num_inputs, &error);
-    if (!inputs || num_inputs == 0) {
-        fprintf(stderr, "Failed to get model inputs\n");
-        larodClearError(&error);
-        larodDisconnect(&conn, NULL);
-        return NULL;
-    }
-
-    size_t n_outputs = 0;
-    larodTensor **outputs = larodGetModelOutputs(model, &n_outputs, &error);
-    if (!outputs || n_outputs == 0) {
-        fprintf(stderr, "Failed to get model outputs\n");
-        larodClearError(&error);
-        larodDisconnect(&conn, NULL);
-        return NULL;
-    }
-
-    *model_out = model;
-    *input_tensor_out = inputs[0];
-    *output_tensors_out = outputs[0];
-    *num_outputs = (int)n_outputs;
-
-    return conn;
-}
-
-/**
- * Pre-process: resize and convert NV12 frame to model input format.
- * This is a hot path — optimization target.
- */
-static void preprocess_frame(const uint8_t *nv12_data, int src_w, int src_h,
-                              uint8_t *rgb_output, int dst_w, int dst_h) {
-    /* Simple bilinear resize + NV12 to RGB conversion */
-    /* TODO: Agent can optimize this with NEON intrinsics, lookup tables, etc. */
-
-    float x_ratio = (float)src_w / dst_w;
-    float y_ratio = (float)src_h / dst_h;
-
-    for (int y = 0; y < dst_h; y++) {
-        for (int x = 0; x < dst_w; x++) {
-            int src_x = (int)(x * x_ratio);
-            int src_y = (int)(y * y_ratio);
-
-            /* NV12: Y plane followed by interleaved UV plane */
-            uint8_t Y = nv12_data[src_y * src_w + src_x];
-            int uv_offset = src_w * src_h + (src_y / 2) * src_w + (src_x & ~1);
-            uint8_t U = nv12_data[uv_offset];
-            uint8_t V = nv12_data[uv_offset + 1];
-
-            /* YUV to RGB */
-            int C = Y - 16;
-            int D = U - 128;
-            int E = V - 128;
-
-            int R = (298 * C + 409 * E + 128) >> 8;
-            int G = (298 * C - 100 * D - 208 * E + 128) >> 8;
-            int B = (298 * C + 516 * D + 128) >> 8;
-
-            int idx = (y * dst_w + x) * 3;
-            rgb_output[idx + 0] = (uint8_t)(R < 0 ? 0 : (R > 255 ? 255 : R));
-            rgb_output[idx + 1] = (uint8_t)(G < 0 ? 0 : (G > 255 ? 255 : G));
-            rgb_output[idx + 2] = (uint8_t)(B < 0 ? 0 : (B > 255 ? 255 : B));
-        }
-    }
-}
-
-/**
- * Post-process: extract detections from model output tensors.
- * Applies confidence threshold and NMS.
- */
-static int postprocess_detections(const float *boxes, const float *scores,
-                                   const float *classes, int num_raw,
-                                   Detection *out, int max_out) {
-    int count = 0;
-
-    for (int i = 0; i < num_raw && count < max_out; i++) {
-        int class_id = (int)classes[i];
-        float confidence = scores[i];
-
-        if (class_id != PERSON_CLASS_ID || confidence < CONFIDENCE_THRESHOLD) {
+        if (error && g_error_matches(error, VDO_ERROR, VDO_ERROR_NO_DATA)) {
+            g_clear_error(&error);
             continue;
         }
+        if (error) {
+            syslog(LOG_ERR, "VDO get_buffer error: %s", error->message);
+            g_clear_error(&error);
+        }
+        return NULL;
+    }
+    return NULL;
+}
 
-        /* SSD output: [ymin, xmin, ymax, xmax] normalized */
-        float ymin = boxes[i * 4 + 0];
-        float xmin = boxes[i * 4 + 1];
-        float ymax = boxes[i * 4 + 2];
-        float xmax = boxes[i * 4 + 3];
+static void vdo_provider_destroy(VdoProvider *vp) {
+    if (!vp) return;
+    if (vp->stream) {
+        vdo_stream_stop(vp->stream);
+        g_object_unref(vp->stream);
+    }
+    free(vp);
+}
 
-        out[count].x = xmin;
-        out[count].y = ymin;
-        out[count].w = xmax - xmin;
-        out[count].h = ymax - ymin;
-        out[count].confidence = confidence;
-        out[count].class_id = class_id;
-        count++;
+/* ─── Larod Model Setup ─────────────────────────────────────────────────── */
+
+typedef struct {
+    larodConnection *conn;
+    larodModel *model;
+    larodModel *pp_model;
+    int model_fd;
+
+    /* Inference tensors */
+    larodTensor **input_tensors;
+    size_t num_inputs;
+    larodTensor **output_tensors;
+    size_t num_outputs;
+
+    /* Preprocessing tensors */
+    larodTensor **pp_input_tensors;
+    size_t pp_num_inputs;
+    larodTensor **pp_output_tensors;
+    size_t pp_num_outputs;
+
+    /* Job requests */
+    larodJobRequest *pp_req;
+    larodJobRequest *inf_req;
+
+    /* Memory-mapped input buffer (for copying VDO frame data) */
+    int image_input_fd;
+    void *image_input_addr;
+    size_t image_buffer_size;
+
+    /* Memory-mapped output tensors */
+    TensorOutput *outputs;
+
+    /* Model input dimensions (from tensor metadata) */
+    unsigned int model_width;
+    unsigned int model_height;
+} LarodProvider;
+
+static LarodProvider *larod_provider_new(unsigned int vdo_width,
+                                          unsigned int vdo_height,
+                                          unsigned int vdo_pitch) {
+    larodError *error = NULL;
+    LarodProvider *lp = calloc(1, sizeof(LarodProvider));
+    if (!lp) return NULL;
+    lp->image_input_fd = -1;
+    lp->model_fd = -1;
+
+    /* Connect to larod */
+    if (!larodConnect(&lp->conn, &error)) {
+        syslog(LOG_ERR, "larodConnect failed: %s", error ? error->msg : "unknown");
+        larodClearError(&error);
+        free(lp);
+        return NULL;
     }
 
-    /* TODO: NMS — agent can optimize this */
+    /* Load inference model onto DLPU */
+    const larodDevice *device = larodGetDevice(lp->conn, LAROD_DEVICE_NAME, 0, &error);
+    if (!device) {
+        syslog(LOG_ERR, "larodGetDevice(%s) failed: %s",
+               LAROD_DEVICE_NAME, error ? error->msg : "unknown");
+        larodClearError(&error);
+        larodDisconnect(&lp->conn, NULL);
+        free(lp);
+        return NULL;
+    }
+
+    lp->model_fd = open(MODEL_PATH, O_RDONLY);
+    if (lp->model_fd < 0) {
+        syslog(LOG_ERR, "Failed to open model: %s", MODEL_PATH);
+        larodDisconnect(&lp->conn, NULL);
+        free(lp);
+        return NULL;
+    }
+
+    syslog(LOG_INFO, "Loading model onto DLPU (may take a moment)...");
+
+    /* Retry model loading if power not available */
+    int retries = 0;
+    do {
+        larodClearError(&error);
+        lp->model = larodLoadModel(lp->conn, lp->model_fd, device,
+                                    LAROD_ACCESS_PRIVATE,
+                                    "autoacap-detection", NULL, &error);
+        if (lp->model) break;
+        if (error && error->code == LAROD_ERROR_POWER_NOT_AVAILABLE) {
+            retries++;
+            usleep(250 * 1000 * retries);
+        } else {
+            break;
+        }
+    } while (retries < MAX_POWER_RETRIES);
+
+    if (!lp->model) {
+        syslog(LOG_ERR, "larodLoadModel failed: %s", error ? error->msg : "unknown");
+        larodClearError(&error);
+        close(lp->model_fd);
+        larodDisconnect(&lp->conn, NULL);
+        free(lp);
+        return NULL;
+    }
+    syslog(LOG_INFO, "Model loaded successfully");
+
+    /* Allocate inference tensors */
+    lp->input_tensors = larodAllocModelInputs(lp->conn, lp->model, 0,
+                                               &lp->num_inputs, NULL, &error);
+    if (!lp->input_tensors) {
+        syslog(LOG_ERR, "Failed to alloc input tensors: %s", error ? error->msg : "unknown");
+        goto fail;
+    }
+    lp->output_tensors = larodAllocModelOutputs(lp->conn, lp->model, 0,
+                                                 &lp->num_outputs, NULL, &error);
+    if (!lp->output_tensors) {
+        syslog(LOG_ERR, "Failed to alloc output tensors: %s", error ? error->msg : "unknown");
+        goto fail;
+    }
+
+    syslog(LOG_INFO, "Model has %zu inputs, %zu outputs", lp->num_inputs, lp->num_outputs);
+
+    /* Get model input dimensions */
+    const larodTensorDims *dims = larodGetTensorDims(lp->input_tensors[0], &error);
+    if (!dims) {
+        syslog(LOG_ERR, "Failed to get input dims: %s", error ? error->msg : "unknown");
+        goto fail;
+    }
+    /* NHWC: dims[0]=batch, dims[1]=height, dims[2]=width, dims[3]=channels */
+    lp->model_height = dims->dims[1];
+    lp->model_width = dims->dims[2];
+    syslog(LOG_INFO, "Model input: %ux%u", lp->model_width, lp->model_height);
+
+    /* Setup preprocessing model (NV12 → RGB, resize) using cpu-proc */
+    const larodDevice *pp_device = larodGetDevice(lp->conn, PP_DEVICE_NAME, 0, &error);
+    if (!pp_device) {
+        syslog(LOG_ERR, "larodGetDevice(%s) failed: %s",
+               PP_DEVICE_NAME, error ? error->msg : "unknown");
+        goto fail;
+    }
+
+    larodMap *pp_map = larodCreateMap(&error);
+    if (!pp_map) goto fail;
+    larodMapSetStr(pp_map, "image.input.format", "nv12", &error);
+    larodMapSetIntArr2(pp_map, "image.input.size", vdo_width, vdo_height, &error);
+    larodMapSetInt(pp_map, "image.input.row-pitch", vdo_pitch, &error);
+    larodMapSetStr(pp_map, "image.output.format", "rgb-interleaved", &error);
+    larodMapSetIntArr2(pp_map, "image.output.size", lp->model_width, lp->model_height, &error);
+
+    lp->pp_model = larodLoadModel(lp->conn, -1, pp_device,
+                                   LAROD_ACCESS_PRIVATE, "", pp_map, &error);
+    larodDestroyMap(&pp_map);
+    if (!lp->pp_model) {
+        syslog(LOG_ERR, "Failed to load preprocessing model: %s",
+               error ? error->msg : "unknown");
+        goto fail;
+    }
+
+    /* Allocate preprocessing tensors */
+    lp->pp_input_tensors = larodAllocModelInputs(lp->conn, lp->pp_model, 0,
+                                                  &lp->pp_num_inputs, NULL, &error);
+    lp->pp_output_tensors = larodAllocModelOutputs(lp->conn, lp->pp_model, 0,
+                                                    &lp->pp_num_outputs, NULL, &error);
+    if (!lp->pp_input_tensors || !lp->pp_output_tensors) {
+        syslog(LOG_ERR, "Failed to alloc preprocessing tensors");
+        goto fail;
+    }
+
+    /* Map preprocessing input tensor for VDO frame data */
+    lp->image_input_fd = larodGetTensorFd(lp->pp_input_tensors[0], &error);
+    if (lp->image_input_fd == LAROD_INVALID_FD) {
+        syslog(LOG_ERR, "Failed to get pp input fd");
+        goto fail;
+    }
+    if (!larodGetTensorFdSize(lp->pp_input_tensors[0], &lp->image_buffer_size, &error)) {
+        syslog(LOG_ERR, "Failed to get pp input size");
+        goto fail;
+    }
+    lp->image_input_addr = mmap(NULL, lp->image_buffer_size,
+                                 PROT_READ | PROT_WRITE, MAP_SHARED,
+                                 lp->image_input_fd, 0);
+    if (lp->image_input_addr == MAP_FAILED) {
+        syslog(LOG_ERR, "mmap pp input failed: %s", strerror(errno));
+        goto fail;
+    }
+
+    syslog(LOG_INFO, "Preprocessing: NV12 %ux%u → RGB %ux%u (buffer %zu bytes)",
+           vdo_width, vdo_height, lp->model_width, lp->model_height,
+           lp->image_buffer_size);
+
+    /* Create job requests */
+    /* Preprocessing: pp_input → pp_output */
+    lp->pp_req = larodCreateJobRequest(lp->pp_model,
+                                        lp->pp_input_tensors, lp->pp_num_inputs,
+                                        lp->pp_output_tensors, lp->pp_num_outputs,
+                                        NULL, &error);
+    if (!lp->pp_req) {
+        syslog(LOG_ERR, "Failed to create pp job request: %s", error ? error->msg : "unknown");
+        goto fail;
+    }
+
+    /* Inference: pp_output → model output (chaining preprocessing output to inference input) */
+    lp->inf_req = larodCreateJobRequest(lp->model,
+                                         lp->pp_output_tensors, lp->pp_num_outputs,
+                                         lp->output_tensors, lp->num_outputs,
+                                         NULL, &error);
+    if (!lp->inf_req) {
+        syslog(LOG_ERR, "Failed to create inf job request: %s", error ? error->msg : "unknown");
+        goto fail;
+    }
+
+    /* Memory-map output tensors for reading results */
+    lp->outputs = calloc(lp->num_outputs, sizeof(TensorOutput));
+    for (size_t i = 0; i < lp->num_outputs; i++) {
+        int fd = larodGetTensorFd(lp->output_tensors[i], &error);
+        if (fd == LAROD_INVALID_FD) {
+            syslog(LOG_ERR, "Failed to get output tensor %zu fd", i);
+            goto fail;
+        }
+        lp->outputs[i].fd = fd;
+
+        size_t sz = 0;
+        if (!larodGetTensorFdSize(lp->output_tensors[i], &sz, &error)) {
+            syslog(LOG_ERR, "Failed to get output tensor %zu size", i);
+            goto fail;
+        }
+        lp->outputs[i].size = sz;
+
+        void *addr = mmap(NULL, sz, PROT_READ, MAP_SHARED, fd, 0);
+        if (addr == MAP_FAILED) {
+            syslog(LOG_ERR, "mmap output tensor %zu failed", i);
+            goto fail;
+        }
+        lp->outputs[i].data = addr;
+        lp->outputs[i].datatype = larodGetTensorDataType(lp->output_tensors[i], &error);
+
+        syslog(LOG_INFO, "Output tensor %zu: %zu bytes", i, sz);
+    }
+
+    syslog(LOG_INFO, "Larod fully initialized");
+    return lp;
+
+fail:
+    larodClearError(&error);
+    /* Partial cleanup — good enough for init failure */
+    if (lp->model_fd >= 0) close(lp->model_fd);
+    larodDisconnect(&lp->conn, NULL);
+    free(lp->outputs);
+    free(lp);
+    return NULL;
+}
+
+static int larod_run_inference(LarodProvider *lp, const uint8_t *frame_data) {
+    larodError *error = NULL;
+    static int power_retries = 0;
+
+    /* Copy VDO frame into preprocessing input buffer */
+    memcpy(lp->image_input_addr, frame_data, lp->image_buffer_size);
+
+    /* Run preprocessing (NV12 → RGB, resize) */
+    if (!larodRunJob(lp->conn, lp->pp_req, &error)) {
+        if (error && error->code == LAROD_ERROR_POWER_NOT_AVAILABLE) {
+            larodClearError(&error);
+            power_retries++;
+            usleep(250 * 1000 * power_retries);
+            return -1; /* Retry */
+        }
+        syslog(LOG_ERR, "Preprocessing failed: %s", error ? error->msg : "unknown");
+        larodClearError(&error);
+        return -1;
+    }
+    power_retries = 0;
+
+    /* Run inference on DLPU */
+    if (!larodRunJob(lp->conn, lp->inf_req, &error)) {
+        if (error && error->code == LAROD_ERROR_POWER_NOT_AVAILABLE) {
+            larodClearError(&error);
+            power_retries++;
+            usleep(250 * 1000 * power_retries);
+            return -1;
+        }
+        syslog(LOG_ERR, "Inference failed: %s", error ? error->msg : "unknown");
+        larodClearError(&error);
+        return -1;
+    }
+    power_retries = 0;
+
+    return 0;
+}
+
+static int larod_get_detections(LarodProvider *lp, Detection *dets, int max_dets) {
+    /*
+     * SSD MobileNet V2 outputs 4 tensors:
+     *   [0] locations: float[N][4] — [ymin, xmin, ymax, xmax] normalized
+     *   [1] classes:   float[N]    — class indices
+     *   [2] scores:    float[N]    — confidence scores
+     *   [3] num_dets:  float[1]    — number of valid detections
+     */
+    if (lp->num_outputs < 4) {
+        syslog(LOG_ERR, "Expected 4 output tensors, got %zu", lp->num_outputs);
+        return 0;
+    }
+
+    const float *locations = (const float *)lp->outputs[0].data;
+    const float *classes   = (const float *)lp->outputs[1].data;
+    const float *scores    = (const float *)lp->outputs[2].data;
+    const float *num_raw   = (const float *)lp->outputs[3].data;
+
+    int n = (int)num_raw[0];
+    int count = 0;
+
+    for (int i = 0; i < n && count < max_dets; i++) {
+        int cls = (int)classes[i];
+        float conf = scores[i];
+
+        if (cls != PERSON_CLASS_ID || conf < CONFIDENCE_THRESHOLD)
+            continue;
+
+        dets[count].y_min = locations[4 * i + 0];
+        dets[count].x_min = locations[4 * i + 1];
+        dets[count].y_max = locations[4 * i + 2];
+        dets[count].x_max = locations[4 * i + 3];
+        dets[count].confidence = conf;
+        dets[count].class_id = cls;
+        count++;
+    }
 
     return count;
 }
 
-/**
- * Write metrics to JSON file for the benchmark harness to read.
- */
-static void write_metrics(const Metrics *metrics) {
+static void larod_provider_destroy(LarodProvider *lp) {
+    if (!lp) return;
+
+    larodDestroyJobRequest(&lp->pp_req);
+    larodDestroyJobRequest(&lp->inf_req);
+
+    if (lp->image_input_addr && lp->image_input_addr != MAP_FAILED)
+        munmap(lp->image_input_addr, lp->image_buffer_size);
+
+    if (lp->outputs) {
+        for (size_t i = 0; i < lp->num_outputs; i++) {
+            if (lp->outputs[i].data && lp->outputs[i].data != MAP_FAILED)
+                munmap(lp->outputs[i].data, lp->outputs[i].size);
+        }
+        free(lp->outputs);
+    }
+
+    larodError *error = NULL;
+    larodDestroyTensors(lp->conn, &lp->pp_input_tensors, lp->pp_num_inputs, &error);
+    larodDestroyTensors(lp->conn, &lp->pp_output_tensors, lp->pp_num_outputs, &error);
+    larodDestroyTensors(lp->conn, &lp->input_tensors, lp->num_inputs, &error);
+    larodDestroyTensors(lp->conn, &lp->output_tensors, lp->num_outputs, &error);
+
+    larodDestroyModel(&lp->model);
+    larodDestroyModel(&lp->pp_model);
+
+    if (lp->model_fd >= 0) close(lp->model_fd);
+    larodDisconnect(&lp->conn, NULL);
+    free(lp);
+}
+
+/* ─── Metrics & Detection Output ────────────────────────────────────────── */
+
+static void write_metrics(double fps, const double *latencies, int num_latencies) {
     FILE *f = fopen(METRICS_PATH, "w");
     if (!f) return;
 
-    fprintf(f, "{\n");
-    fprintf(f, "  \"fps\": %.1f,\n", metrics->fps);
-    fprintf(f, "  \"latencies_ms\": [");
-    for (int i = 0; i < metrics->num_latencies; i++) {
+    fprintf(f, "{\n  \"fps\": %.1f,\n  \"latencies_ms\": [", fps);
+    for (int i = 0; i < num_latencies; i++) {
         if (i > 0) fprintf(f, ", ");
-        fprintf(f, "%.1f", metrics->latencies_ms[i]);
+        fprintf(f, "%.1f", latencies[i]);
     }
-    fprintf(f, "]\n");
-    fprintf(f, "}\n");
+    fprintf(f, "]\n}\n");
     fclose(f);
 }
 
-/**
- * Write detections to JSON for mAP computation.
- */
-static void write_detections(Detection *dets, int num_dets, int frame_id, FILE *f) {
-    if (frame_id == 0) {
+static void write_detection_frame(FILE *f, const Detection *dets, int num_dets,
+                                   int frame_id, int is_first) {
+    if (is_first) {
         fprintf(f, "{\"frames\": [\n");
     } else {
         fprintf(f, ",\n");
     }
-
     fprintf(f, "  {\"frame_id\": %d, \"detections\": [", frame_id);
     for (int i = 0; i < num_dets; i++) {
         if (i > 0) fprintf(f, ", ");
-        fprintf(f, "{\"bbox\": [%.4f, %.4f, %.4f, %.4f], \"confidence\": %.4f, \"class\": \"person\"}",
-                dets[i].x, dets[i].y, dets[i].w, dets[i].h, dets[i].confidence);
+        float x = dets[i].x_min;
+        float y = dets[i].y_min;
+        float w = dets[i].x_max - dets[i].x_min;
+        float h = dets[i].y_max - dets[i].y_min;
+        fprintf(f, "{\"bbox\": [%.4f, %.4f, %.4f, %.4f], "
+                    "\"confidence\": %.4f, \"class\": \"person\"}",
+                x, y, w, h, dets[i].confidence);
     }
     fprintf(f, "]}");
 }
 
-int main(int argc, char *argv[]) {
-    (void)argc;
-    (void)argv;
+/* ─── Main ──────────────────────────────────────────────────────────────── */
 
+int main(void) {
+    openlog("autoacap", LOG_PID, LOG_LOCAL0);
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
+    syslog(LOG_INFO, "AutoACAP C variant starting");
     printf("AutoACAP C variant starting...\n");
 
-    /* Initialize VDO stream */
-    VdoStream *stream = init_vdo_stream();
-    if (!stream) {
-        fprintf(stderr, "Failed to initialize VDO\n");
+    /* Initialize VDO */
+    VdoProvider *vdo = vdo_provider_new();
+    if (!vdo) {
+        syslog(LOG_ERR, "Failed to init VDO");
         return 1;
     }
 
-    /* Initialize Larod */
-    larodModel *model = NULL;
-    larodTensor *input_tensor = NULL;
-    larodTensor *output_tensors = NULL;
-    int num_outputs = 0;
-
-    larodConnection *larod = init_larod(&model, &input_tensor, &output_tensors, &num_outputs);
+    /* Initialize Larod with preprocessing */
+    LarodProvider *larod = larod_provider_new(vdo->width, vdo->height, vdo->pitch);
     if (!larod) {
-        fprintf(stderr, "Failed to initialize Larod\n");
-        g_object_unref(stream);
-        return 1;
-    }
-
-    /* Allocate pre-processing buffer */
-    uint8_t *rgb_buffer = (uint8_t *)malloc(INPUT_WIDTH * INPUT_HEIGHT * 3);
-    if (!rgb_buffer) {
-        fprintf(stderr, "Failed to allocate RGB buffer\n");
+        syslog(LOG_ERR, "Failed to init Larod");
+        vdo_provider_destroy(vdo);
         return 1;
     }
 
     /* Metrics tracking */
-    Metrics metrics = {0};
-    metrics.capacity = 1000;
-    metrics.latencies_ms = (double *)malloc(sizeof(double) * metrics.capacity);
-    metrics.num_latencies = 0;
-
-    Detection detections[MAX_DETECTIONS];
+    double latencies[MAX_LATENCIES];
+    int num_latencies = 0;
     int frame_count = 0;
+    double fps = 0.0;
     double start_time = get_time_ms();
 
-    /* Open detections output file */
+    Detection detections[MAX_DETECTIONS];
     FILE *det_file = fopen(DETECTIONS_PATH, "w");
 
+    syslog(LOG_INFO, "Entering detection loop");
     printf("Running detection loop...\n");
 
-    /* Main detection loop */
+    /* ─── Main detection loop ─── */
     while (running) {
-        GError *error = NULL;
         double frame_start = get_time_ms();
 
-        /* Capture frame */
-        VdoFrame *frame = vdo_stream_get_frame(stream, &error);
-        if (!frame) {
-            if (error) g_error_free(error);
-            continue;
-        }
+        /* Get frame from VDO */
+        VdoBuffer *vdo_buf = vdo_provider_get_frame(vdo);
+        if (!vdo_buf) continue;
 
-        VdoBuffer *buffer = vdo_frame_get_buffer(frame);
-        uint8_t *frame_data = (uint8_t *)vdo_buffer_get_data(buffer);
+        uint8_t *frame_data = (uint8_t *)vdo_buffer_get_data(vdo_buf);
 
-        /* Pre-process: NV12 -> RGB, resize to model input */
-        preprocess_frame(frame_data, 640, 480, rgb_buffer, INPUT_WIDTH, INPUT_HEIGHT);
+        /* Run preprocessing + inference */
+        int ret = larod_run_inference(larod, frame_data);
 
-        /* Run inference via Larod */
-        larodError *larod_err = NULL;
-        /* TODO: Copy rgb_buffer to input tensor, run inference, read outputs */
-        /* This is where the actual larod inference call goes */
-        /* For now this is a skeleton — the agent will fill in the proper */
-        /* larod job creation and execution flow */
+        /* Release VDO buffer immediately after copy */
+        GError *vdo_err = NULL;
+        vdo_stream_buffer_unref(vdo->stream, &vdo_buf, &vdo_err);
+        if (vdo_err) g_error_free(vdo_err);
 
-        /* Post-process detections */
-        /* TODO: Read output tensors and extract detections */
-        int num_detections = 0;
-        /* num_detections = postprocess_detections(...) */
+        if (ret < 0) continue; /* Inference failed, skip frame */
+
+        /* Extract detections */
+        int num_dets = larod_get_detections(larod, detections, MAX_DETECTIONS);
 
         /* Write detections for mAP */
         if (det_file) {
-            write_detections(detections, num_detections, frame_count, det_file);
+            write_detection_frame(det_file, detections, num_dets,
+                                  frame_count, frame_count == 0);
         }
 
         /* Track latency */
-        double frame_end = get_time_ms();
-        double latency = frame_end - frame_start;
-
-        if (metrics.num_latencies < metrics.capacity) {
-            metrics.latencies_ms[metrics.num_latencies++] = latency;
+        double latency = get_time_ms() - frame_start;
+        if (num_latencies < MAX_LATENCIES) {
+            latencies[num_latencies++] = latency;
         }
 
-        g_object_unref(frame);
         frame_count++;
 
-        /* Update FPS periodically */
-        double elapsed = (frame_end - start_time) / 1000.0;
-        if (elapsed > 0) {
-            metrics.fps = frame_count / elapsed;
-        }
+        /* Update FPS */
+        double elapsed_s = (get_time_ms() - start_time) / 1000.0;
+        if (elapsed_s > 0) fps = frame_count / elapsed_s;
 
-        /* Write metrics every 10 frames */
+        /* Log periodically */
         if (frame_count % 10 == 0) {
-            write_metrics(&metrics);
-            printf("\rFrames: %d | FPS: %.1f | Latency: %.1fms",
-                   frame_count, metrics.fps, latency);
+            write_metrics(fps, latencies, num_latencies);
+            printf("\rFrames: %d | FPS: %.1f | Latency: %.1fms | Dets: %d   ",
+                   frame_count, fps, latency, num_dets);
             fflush(stdout);
+            syslog(LOG_INFO, "Frames: %d FPS: %.1f Latency: %.1fms Dets: %d",
+                   frame_count, fps, latency, num_dets);
         }
     }
 
-    printf("\nShutting down. Total frames: %d, FPS: %.1f\n",
-           frame_count, metrics.fps);
+    printf("\nShutting down. Total frames: %d, FPS: %.1f\n", frame_count, fps);
+    syslog(LOG_INFO, "Shutting down. Frames: %d FPS: %.1f", frame_count, fps);
 
     /* Close detections file */
     if (det_file) {
@@ -408,14 +690,12 @@ int main(int argc, char *argv[]) {
     }
 
     /* Final metrics write */
-    write_metrics(&metrics);
+    write_metrics(fps, latencies, num_latencies);
 
     /* Cleanup */
-    free(rgb_buffer);
-    free(metrics.latencies_ms);
-    larodDisconnect(&larod, NULL);
-    vdo_stream_stop(stream);
-    g_object_unref(stream);
+    larod_provider_destroy(larod);
+    vdo_provider_destroy(vdo);
+    closelog();
 
     return 0;
 }
