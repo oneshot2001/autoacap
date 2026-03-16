@@ -4,15 +4,19 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# Axis ACAP Rust wrappers
-# These provide safe Rust bindings to Axis C APIs
-# acap = { git = "https://github.com/AxisCommunications/acap-rs" }
+# Axis ACAP FFI bindings
+larod-sys = { git = "https://github.com/AxisCommunications/acap-rs" }
+vdo-sys = { git = "https://github.com/AxisCommunications/acap-rs" }
+acap-logging = { git = "https://github.com/AxisCommunications/acap-rs" }
 
 # Serialization for metrics/detection output
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Time measurement
+# Logging
+log = "0.4"
+
+# Signal handling
 libc = "0.2"
 
 [profile.release]
