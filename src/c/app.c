@@ -51,8 +51,8 @@
 #define MAX_DETECTIONS       100
 #define MAX_LATENCIES        2000
 
-/* DLPU device name for ARTPEC-8/9 */
-#define LAROD_DEVICE_NAME "axis-a8-dlpu"
+/* DLPU device name — discovered at runtime via larodListDevices */
+static const char *LAROD_DEVICE_NAME = NULL;
 /* Preprocessing device */
 #define PP_DEVICE_NAME    "cpu-proc"
 
@@ -252,11 +252,50 @@ static LarodProvider *larod_provider_new(unsigned int vdo_width,
         return NULL;
     }
 
-    /* Load inference model onto DLPU */
-    const larodDevice *device = larodGetDevice(lp->conn, LAROD_DEVICE_NAME, 0, &error);
+    /* Discover available devices and find the DLPU */
+    size_t num_devices = 0;
+    const larodDevice **devices = larodListDevices(lp->conn, &num_devices, &error);
+    if (!devices || num_devices == 0) {
+        syslog(LOG_ERR, "larodListDevices failed: %s", error ? error->msg : "unknown");
+        larodClearError(&error);
+        larodDisconnect(&lp->conn, NULL);
+        free(lp);
+        return NULL;
+    }
+
+    const larodDevice *device = NULL;
+    for (size_t i = 0; i < num_devices; i++) {
+        const char *name = larodGetDeviceName(devices[i], &error);
+        syslog(LOG_INFO, "Larod device [%zu]: %s", i, name ? name : "unknown");
+        /* Prefer a9-dlpu-tflite for .tflite models, fall back to any dlpu */
+        if (name && strstr(name, "dlpu-tflite")) {
+            device = devices[i];
+            LAROD_DEVICE_NAME = name;
+            syslog(LOG_INFO, "Selected DLPU device: %s", name);
+            break; /* Best match — stop searching */
+        } else if (name && strstr(name, "dlpu") && !device) {
+            device = devices[i];
+            LAROD_DEVICE_NAME = name;
+            syslog(LOG_INFO, "Selected DLPU device (fallback): %s", name);
+        }
+    }
+
     if (!device) {
-        syslog(LOG_ERR, "larodGetDevice(%s) failed: %s",
-               LAROD_DEVICE_NAME, error ? error->msg : "unknown");
+        /* Fall back to trying known names */
+        const char *fallbacks[] = {"axis-a9-dlpu", "axis-a8-dlpu", "artpec-proc", NULL};
+        for (int i = 0; fallbacks[i]; i++) {
+            larodClearError(&error);
+            device = larodGetDevice(lp->conn, fallbacks[i], 0, &error);
+            if (device) {
+                LAROD_DEVICE_NAME = fallbacks[i];
+                syslog(LOG_INFO, "Found DLPU device via fallback: %s", fallbacks[i]);
+                break;
+            }
+        }
+    }
+
+    if (!device) {
+        syslog(LOG_ERR, "No DLPU device found on this camera");
         larodClearError(&error);
         larodDisconnect(&lp->conn, NULL);
         free(lp);

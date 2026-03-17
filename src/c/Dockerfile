@@ -11,9 +11,13 @@ COPY Makefile .
 COPY manifest.json .
 COPY LICENSE .
 
+# Copy model into package (will be installed to /usr/local/packages/autoacap/model/)
+RUN mkdir -p model
+COPY model/ model/
+
 RUN . /opt/axis/acapsdk/environment-setup* && \
     make
 
-# Package as .eap
+# Package as .eap (include model/ directory as additional files)
 RUN . /opt/axis/acapsdk/environment-setup* && \
-    acap-build . -m manifest.json
+    acap-build . -m manifest.json -a model

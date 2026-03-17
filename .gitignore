@@ -32,3 +32,4 @@ __pycache__/
 # Camera credentials
 .env
 camera_pass.txt
+src/c/model/
