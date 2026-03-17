@@ -9,9 +9,7 @@ WORKDIR /opt/app
 COPY app.c .
 COPY Makefile .
 COPY manifest.json .
-
-# Create model directory in package
-RUN mkdir -p model
+COPY LICENSE .
 
 RUN . /opt/axis/acapsdk/environment-setup* && \
     make

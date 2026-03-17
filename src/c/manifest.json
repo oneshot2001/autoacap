@@ -4,18 +4,13 @@
         "setup": {
             "appName": "autoacap",
             "vendor": "AutoACAP Research",
+            "version": "0.1.0",
             "embeddedSdkVersion": "3.0",
             "runMode": "respawn",
             "user": {
                 "group": "sdk",
                 "username": "sdk"
             }
-        },
-        "installation": {
-            "postInstallScript": ""
-        },
-        "configuration": {
-            "settingPage": ""
         }
     }
 }
