@@ -42,8 +42,8 @@
 #define METRICS_PATH     "/tmp/autoacap_metrics.json"
 #define DETECTIONS_PATH  "/tmp/autoacap_detections.json"
 
-#define STREAM_WIDTH     640
-#define STREAM_HEIGHT    480
+#define STREAM_WIDTH     320
+#define STREAM_HEIGHT    240
 #define STREAM_FPS       60.0
 
 #define CONFIDENCE_THRESHOLD 0.5f
