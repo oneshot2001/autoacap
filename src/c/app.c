@@ -44,7 +44,7 @@
 
 #define STREAM_WIDTH     640
 #define STREAM_HEIGHT    480
-#define STREAM_FPS       30.0
+#define STREAM_FPS       60.0
 
 #define CONFIDENCE_THRESHOLD 0.5f
 #define PERSON_CLASS_ID      1
