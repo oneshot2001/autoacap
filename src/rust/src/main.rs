@@ -35,7 +35,8 @@ const PERSON_CLASS_ID: i32 = 1;
 const MAX_LATENCIES: usize = 2000;
 const MAX_POWER_RETRIES: u32 = 50;
 
-const LAROD_DEVICE_NAME: &str = "axis-a8-dlpu";
+// Discovered at runtime via larodListDevices
+const LAROD_DEVICE_FALLBACKS: &[&str] = &["a9-dlpu-tflite", "axis-a9-dlpu", "axis-a8-dlpu"];
 const PP_DEVICE_NAME: &str = "cpu-proc";
 
 // ─── Types ──────────────────────────────────────────────────────────────
@@ -114,12 +115,51 @@ impl LarodProvider {
             return None;
         }
 
-        // Get DLPU device
-        let device_name = CString::new(LAROD_DEVICE_NAME).unwrap();
-        let device = larod_sys::larodGetDevice(conn, device_name.as_ptr(), 0, &mut error);
-        if device.is_null() {
-            error!("larodGetDevice failed for {}", LAROD_DEVICE_NAME);
+        // Discover DLPU device
+        let mut num_devices: usize = 0;
+        let devices = larod_sys::larodListDevices(conn, &mut num_devices, &mut error);
+        if devices.is_null() || num_devices == 0 {
+            error!("larodListDevices failed");
             larod_sys::larodClearError(&mut error);
+            larod_sys::larodDisconnect(&mut conn, ptr::null_mut());
+            return None;
+        }
+
+        let mut device: *const larod_sys::larodDevice = ptr::null();
+        for i in 0..num_devices {
+            let dev = *devices.add(i);
+            let name_ptr = larod_sys::larodGetDeviceName(dev, &mut error);
+            if !name_ptr.is_null() {
+                let name = std::ffi::CStr::from_ptr(name_ptr).to_string_lossy();
+                info!("Larod device [{}]: {}", i, name);
+                // Prefer dlpu-tflite for .tflite models
+                if name.contains("dlpu-tflite") {
+                    device = dev;
+                    info!("Selected DLPU device: {}", name);
+                    break;
+                } else if name.contains("dlpu") && device.is_null() {
+                    device = dev;
+                    info!("Selected DLPU device (fallback): {}", name);
+                }
+            }
+        }
+
+        // Try fallback names if no dlpu found via listing
+        if device.is_null() {
+            for fallback in LAROD_DEVICE_FALLBACKS {
+                let name = CString::new(*fallback).unwrap();
+                larod_sys::larodClearError(&mut error);
+                let d = larod_sys::larodGetDevice(conn, name.as_ptr(), 0, &mut error);
+                if !d.is_null() {
+                    device = d;
+                    info!("Found DLPU via fallback: {}", fallback);
+                    break;
+                }
+            }
+        }
+
+        if device.is_null() {
+            error!("No DLPU device found");
             larod_sys::larodDisconnect(&mut conn, ptr::null_mut());
             return None;
         }

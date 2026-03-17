@@ -33,3 +33,4 @@ __pycache__/
 .env
 camera_pass.txt
 src/c/model/
+src/rust/model/
