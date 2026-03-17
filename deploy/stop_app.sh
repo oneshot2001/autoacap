@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stop an ACAP application on an Axis camera
+# Stop an ACAP application on an Axis camera via VAPIX
 # Usage: ./stop_app.sh <camera_ip> <camera_pass> <app_name>
 
 set -euo pipefail
@@ -10,7 +10,7 @@ APP_NAME="${3:?Missing app name}"
 
 echo "Stopping ${APP_NAME} on ${CAMERA_IP}..." >&2
 
-curl -s -u "root:${CAMERA_PASS}" \
+curl -s --anyauth -u "root:${CAMERA_PASS}" \
     --connect-timeout 10 \
     "http://${CAMERA_IP}/axis-cgi/applications/control.cgi?action=stop&package=${APP_NAME}" >&2
 

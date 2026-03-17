@@ -18,18 +18,22 @@ WARMUP_DURATION=10     # seconds
 APP_NAME="autoacap"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# SSH helper
+# SSH credentials (separate SSH account on AXIS OS 12)
+SSH_USER="alpha"
+SSH_PASS="alpha2026"
+
 ssh_cam() {
-    sshpass -p "$CAMERA_PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "root@${CAMERA_IP}" "$@"
+    sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "${SSH_USER}@${CAMERA_IP}" "$@"
 }
 
-scp_cam() {
-    sshpass -p "$CAMERA_PASS" scp -o StrictHostKeyChecking=no "$@"
+# VAPIX helper (digest auth)
+vapix() {
+    curl -s --anyauth -u "root:${CAMERA_PASS}" --connect-timeout 10 "$@"
 }
 
 # --- Pre-flight: verify camera is reachable ---
 echo "Checking camera at ${CAMERA_IP}..." >&2
-if ! ssh_cam "echo ok" >/dev/null 2>&1; then
+if ! vapix "http://${CAMERA_IP}/axis-cgi/param.cgi?action=list&group=root.Properties.System.Soc" >/dev/null 2>&1; then
     echo "ERROR: Camera unreachable at ${CAMERA_IP}" >&2
     echo "RESULT:	0	0.0	0	0	0	0"
     exit 1

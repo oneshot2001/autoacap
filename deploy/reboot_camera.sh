@@ -1,5 +1,5 @@
 #!/bin/bash
-# Emergency reboot of an Axis camera
+# Emergency reboot of an Axis camera via VAPIX
 # Usage: ./reboot_camera.sh <camera_ip> <camera_pass>
 
 set -euo pipefail
@@ -9,7 +9,7 @@ CAMERA_PASS="${2:?Missing camera password}"
 
 echo "Rebooting camera at ${CAMERA_IP}..." >&2
 
-curl -s -u "root:${CAMERA_PASS}" \
+curl -s --anyauth -u "root:${CAMERA_PASS}" \
     --connect-timeout 10 \
     "http://${CAMERA_IP}/axis-cgi/restart.cgi" >&2
 
