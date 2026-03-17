@@ -109,7 +109,7 @@ static VdoProvider *vdo_provider_new(void) {
     vdo_map_set_uint32(settings, "width", STREAM_WIDTH);
     vdo_map_set_uint32(settings, "height", STREAM_HEIGHT);
     vdo_map_set_double(settings, "framerate", STREAM_FPS);
-    vdo_map_set_uint32(settings, "buffer.count", 2);
+    vdo_map_set_uint32(settings, "buffer.count", 4);
     vdo_map_set_boolean(settings, "socket.blocking", FALSE);
 
     vp->stream = vdo_stream_new(settings, NULL, &error);
