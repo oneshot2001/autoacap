@@ -105,7 +105,7 @@ LOOP FOREVER:
 6. Read out the results: `grep "^RESULT:" run.log`
 7. If grep output is empty, the run crashed. Run `tail -n 50 run.log` to read the error. Attempt a fix if trivial. If you can't fix after 3 attempts, give up on this idea.
 8. Record the results in results.tsv (do NOT commit results.tsv — leave it untracked).
-9. **Accuracy gate:** If mAP < 0.40, treat as a discard regardless of FPS.
+9. **Accuracy gate:** DISABLED until ground truth is available. When `benchmark/ground_truth/detections.json` exists, discard if mAP < 0.40.
 10. If FPS improved (higher) and mAP >= 0.40, you "advance" the branch, keeping the commit.
 11. If FPS is equal or worse, you `git reset` back to where you started.
 
