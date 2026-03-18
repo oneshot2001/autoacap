@@ -266,12 +266,12 @@ impl LarodProvider {
         let key_input_size = CString::new("image.input.size").unwrap();
         larod_sys::larodMapSetIntArr2(
             pp_map, key_input_size.as_ptr(),
-            vdo_width as libc::c_int, vdo_height as libc::c_int, &mut error,
+            vdo_width as i64, vdo_height as i64, &mut error,
         );
 
         let key_input_pitch = CString::new("image.input.row-pitch").unwrap();
         larod_sys::larodMapSetInt(
-            pp_map, key_input_pitch.as_ptr(), vdo_pitch as libc::c_int, &mut error,
+            pp_map, key_input_pitch.as_ptr(), vdo_pitch as i64, &mut error,
         );
 
         let key_output_format = CString::new("image.output.format").unwrap();
@@ -281,7 +281,7 @@ impl LarodProvider {
         let key_output_size = CString::new("image.output.size").unwrap();
         larod_sys::larodMapSetIntArr2(
             pp_map, key_output_size.as_ptr(),
-            model_width as libc::c_int, model_height as libc::c_int, &mut error,
+            model_width as i64, model_height as i64, &mut error,
         );
 
         let empty_desc = CString::new("").unwrap();

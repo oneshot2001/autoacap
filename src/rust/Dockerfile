@@ -37,15 +37,14 @@ PKG_CONFIG_ALLOW_CROSS = "1"\n' \
     "$SYSROOT" "$SYSROOT" "$SYSROOT" "$SYSROOT" "$SYSROOT" \
     > .cargo/config.toml
 
-# Copy Cargo manifest first for dependency caching
+# Set pkg-config env vars so -sys crate build scripts find Axis SDK libs
+# These must be ENV (not just .cargo/config.toml [env]) for build.rs scripts
+ENV PKG_CONFIG_PATH="/opt/axis/acapsdk/sysroots/aarch64/usr/lib/pkgconfig:/opt/axis/acapsdk/sysroots/aarch64/usr/share/pkgconfig"
+ENV PKG_CONFIG_SYSROOT_DIR="/opt/axis/acapsdk/sysroots/aarch64"
+ENV PKG_CONFIG_ALLOW_CROSS="1"
+
+# Copy all source at once (no cache warming — build.rs must run with real source)
 COPY Cargo.toml .
-RUN mkdir -p src && echo 'fn main() {}' > src/main.rs
-
-# Pre-build dependencies (host CC must be native gcc, NOT the cross-compiler)
-# Do NOT source environment-setup here — it overrides CC to the cross-compiler
-RUN cargo build --release --target aarch64-unknown-linux-gnu 2>&1 || true
-
-# Now copy actual source
 COPY src/ src/
 COPY manifest.json .
 COPY LICENSE .
@@ -54,8 +53,8 @@ COPY LICENSE .
 RUN mkdir -p model
 COPY model/ model/
 
-# Build the real binary (without sourcing environment-setup — .cargo/config.toml handles cross)
-RUN cargo build --release --target aarch64-unknown-linux-gnu
+# Build the real binary — pkg-config will find liblarod + vdostream and link them
+RUN cargo build --release --target aarch64-unknown-linux-gnu 2>&1
 
 # Copy binary to packaging location
 RUN cp target/aarch64-unknown-linux-gnu/release/autoacap .
