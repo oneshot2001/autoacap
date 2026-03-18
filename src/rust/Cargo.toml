@@ -4,10 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# Axis ACAP FFI bindings
-larod-sys = { git = "https://github.com/AxisCommunications/acap-rs" }
-vdo-sys = { git = "https://github.com/AxisCommunications/acap-rs" }
-acap-logging = { git = "https://github.com/AxisCommunications/acap-rs" }
+# Axis ACAP FFI bindings — pinned to known-good commit
+larod-sys = { git = "https://github.com/AxisCommunications/acap-rs", rev = "f8bc9c76" }
+vdo-sys = { git = "https://github.com/AxisCommunications/acap-rs", rev = "f8bc9c76" }
+acap-logging = { git = "https://github.com/AxisCommunications/acap-rs", rev = "f8bc9c76" }
 
 # Serialization for metrics/detection output
 serde = { version = "1", features = ["derive"] }

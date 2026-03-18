@@ -41,28 +41,19 @@ const PP_DEVICE_NAME: &str = "cpu-proc";
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize)]
+const MAX_DETECTIONS: usize = 100;
+
+#[derive(Debug, Clone, Copy, Serialize)]
 struct Detection {
     bbox: [f32; 4],
     confidence: f32,
-    class: String,
-}
-
-#[derive(Debug, Serialize)]
-struct FrameResult {
-    frame_id: u32,
-    detections: Vec<Detection>,
+    class_id: i32,
 }
 
 #[derive(Debug, Serialize)]
 struct Metrics {
     fps: f64,
     latencies_ms: Vec<f64>,
-}
-
-#[derive(Debug, Serialize)]
-struct DetectionResults {
-    frames: Vec<FrameResult>,
 }
 
 // ─── Output tensor info ─────────────────────────────────────────────────
@@ -460,22 +451,23 @@ impl LarodProvider {
         true
     }
 
-    unsafe fn get_detections(&self) -> Vec<Detection> {
+    /// Write detections into a pre-allocated buffer. Returns count. Zero allocations.
+    unsafe fn get_detections_into(&self, buf: &mut [Detection; MAX_DETECTIONS]) -> usize {
         if self.num_outputs < 4 {
             error!("Expected 4 output tensors, got {}", self.num_outputs);
-            return Vec::new();
+            return 0;
         }
 
-        // SSD MobileNet V2: locations, classes, scores, num_detections
         let locations = self.outputs[0].data as *const f32;
         let classes = self.outputs[1].data as *const f32;
         let scores = self.outputs[2].data as *const f32;
         let num_raw = self.outputs[3].data as *const f32;
 
         let n = *num_raw as i32;
-        let mut detections = Vec::new();
+        let mut count = 0usize;
 
         for i in 0..n {
+            if count >= MAX_DETECTIONS { break; }
             let idx = i as usize;
             let cls = *classes.add(idx) as i32;
             let conf = *scores.add(idx);
@@ -489,14 +481,15 @@ impl LarodProvider {
             let y_max = *locations.add(idx * 4 + 2);
             let x_max = *locations.add(idx * 4 + 3);
 
-            detections.push(Detection {
+            buf[count] = Detection {
                 bbox: [x_min, y_min, x_max - x_min, y_max - y_min],
                 confidence: conf,
-                class: "person".to_string(),
-            });
+                class_id: cls,
+            };
+            count += 1;
         }
 
-        detections
+        count
     }
 }
 
@@ -686,18 +679,25 @@ fn main() {
         }
     };
 
-    // Metrics tracking
+    // Metrics tracking — pre-allocated, no growth in hot loop
     let mut latencies: Vec<f64> = Vec::with_capacity(MAX_LATENCIES);
     let mut frame_count: u32 = 0;
     let mut fps: f64 = 0.0;
     let start_time = Instant::now();
 
-    let mut detection_results = DetectionResults { frames: Vec::new() };
+    // Pre-allocated detection buffer — zero allocs per frame
+    let mut det_buf = [Detection { bbox: [0.0; 4], confidence: 0.0, class_id: 0 }; MAX_DETECTIONS];
+
+    // Stream detections to file instead of accumulating in memory
+    let mut det_file = File::create(DETECTIONS_PATH).ok();
+    if let Some(ref mut f) = det_file {
+        let _ = write!(f, "{{\"frames\": [\n");
+    }
 
     info!("Entering detection loop");
     println!("Running detection loop...");
 
-    // ─── Main detection loop ───
+    // ─── Main detection loop (zero-allocation) ───
     while RUNNING.load(Ordering::SeqCst) {
         let frame_start = Instant::now();
 
@@ -719,14 +719,23 @@ fn main() {
 
         if !ok { continue; }
 
-        // Extract detections
-        let detections = unsafe { larod.get_detections() };
+        // Extract detections into pre-allocated buffer — zero allocations
+        let num_dets = unsafe { larod.get_detections_into(&mut det_buf) };
 
-        // Record for mAP
-        detection_results.frames.push(FrameResult {
-            frame_id: frame_count,
-            detections: detections.clone(),
-        });
+        // Stream detections to file (no Vec accumulation)
+        if let Some(ref mut f) = det_file {
+            if frame_count > 0 { let _ = write!(f, ",\n"); }
+            let _ = write!(f, "  {{\"frame_id\": {}, \"detections\": [", frame_count);
+            for i in 0..num_dets {
+                if i > 0 { let _ = write!(f, ", "); }
+                let d = &det_buf[i];
+                let _ = write!(f,
+                    "{{\"bbox\": [{:.4}, {:.4}, {:.4}, {:.4}], \"confidence\": {:.4}, \"class\": \"person\"}}",
+                    d.bbox[0], d.bbox[1], d.bbox[2], d.bbox[3], d.confidence
+                );
+            }
+            let _ = write!(f, "]}}");
+        }
 
         // Track latency
         let latency_ms = frame_start.elapsed().as_secs_f64() * 1000.0;
@@ -745,12 +754,12 @@ fn main() {
             write_metrics(fps, &latencies);
             print!(
                 "\rFrames: {} | FPS: {:.1} | Latency: {:.1}ms | Dets: {}   ",
-                frame_count, fps, latency_ms, detections.len()
+                frame_count, fps, latency_ms, num_dets
             );
             let _ = std::io::stdout().flush();
             info!(
                 "Frames: {} FPS: {:.1} Latency: {:.1}ms Dets: {}",
-                frame_count, fps, latency_ms, detections.len()
+                frame_count, fps, latency_ms, num_dets
             );
         }
     }
@@ -761,8 +770,8 @@ fn main() {
     // Final metrics
     write_metrics(fps, &latencies);
 
-    // Write detection results
-    if let Ok(json) = serde_json::to_string_pretty(&detection_results) {
-        let _ = std::fs::write(DETECTIONS_PATH, json);
+    // Close detections file
+    if let Some(ref mut f) = det_file {
+        let _ = write!(f, "\n]}}\n");
     }
 }
