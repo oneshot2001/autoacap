@@ -266,12 +266,12 @@ impl LarodProvider {
         let key_input_size = CString::new("image.input.size").unwrap();
         larod_sys::larodMapSetIntArr2(
             pp_map, key_input_size.as_ptr(),
-            vdo_width as i32, vdo_height as i32, &mut error,
+            vdo_width as libc::c_int, vdo_height as libc::c_int, &mut error,
         );
 
         let key_input_pitch = CString::new("image.input.row-pitch").unwrap();
         larod_sys::larodMapSetInt(
-            pp_map, key_input_pitch.as_ptr(), vdo_pitch as i32, &mut error,
+            pp_map, key_input_pitch.as_ptr(), vdo_pitch as libc::c_int, &mut error,
         );
 
         let key_output_format = CString::new("image.output.format").unwrap();
@@ -281,7 +281,7 @@ impl LarodProvider {
         let key_output_size = CString::new("image.output.size").unwrap();
         larod_sys::larodMapSetIntArr2(
             pp_map, key_output_size.as_ptr(),
-            model_width as i32, model_height as i32, &mut error,
+            model_width as libc::c_int, model_height as libc::c_int, &mut error,
         );
 
         let empty_desc = CString::new("").unwrap();
@@ -540,7 +540,7 @@ struct VdoProvider {
 
 impl VdoProvider {
     unsafe fn new() -> Option<Self> {
-        let mut error: *mut vdo_sys::GError = ptr::null_mut();
+        let mut error: *mut glib_sys::GError = ptr::null_mut();
 
         let settings = vdo_sys::vdo_map_new();
         vdo_sys::vdo_map_set_uint32(settings, c"format".as_ptr(), vdo_sys::VdoFormat::VDO_FORMAT_YUV.0 as u32);
@@ -550,8 +550,8 @@ impl VdoProvider {
         vdo_sys::vdo_map_set_uint32(settings, c"buffer.count".as_ptr(), 2);
         vdo_sys::vdo_map_set_boolean(settings, c"socket.blocking".as_ptr(), 0);
 
-        let stream = vdo_sys::vdo_stream_new(settings, ptr::null_mut(), &mut error);
-        vdo_sys::g_object_unref(settings as *mut _);
+        let stream = vdo_sys::vdo_stream_new(settings, None, &mut error);
+        gobject_sys::g_object_unref(settings as *mut _);
 
         if stream.is_null() {
             error!("Failed to create VDO stream");
@@ -564,7 +564,7 @@ impl VdoProvider {
             let w = vdo_sys::vdo_map_get_uint32(info, c"width".as_ptr(), STREAM_WIDTH);
             let h = vdo_sys::vdo_map_get_uint32(info, c"height".as_ptr(), STREAM_HEIGHT);
             let p = vdo_sys::vdo_map_get_uint32(info, c"pitch".as_ptr(), w);
-            vdo_sys::g_object_unref(info as *mut _);
+            gobject_sys::g_object_unref(info as *mut _);
             (w, h, p)
         } else {
             (STREAM_WIDTH, STREAM_HEIGHT, STREAM_WIDTH)
@@ -572,14 +572,14 @@ impl VdoProvider {
 
         if vdo_sys::vdo_stream_start(stream, &mut error) == 0 {
             error!("Failed to start VDO stream");
-            vdo_sys::g_object_unref(stream as *mut _);
+            gobject_sys::g_object_unref(stream as *mut _);
             return None;
         }
 
         let poll_fd = vdo_sys::vdo_stream_get_fd(stream, &mut error);
         if poll_fd < 0 {
             error!("Failed to get VDO stream fd");
-            vdo_sys::g_object_unref(stream as *mut _);
+            gobject_sys::g_object_unref(stream as *mut _);
             return None;
         }
 
@@ -589,7 +589,7 @@ impl VdoProvider {
     }
 
     unsafe fn get_frame(&self) -> *mut vdo_sys::VdoBuffer {
-        let mut error: *mut vdo_sys::GError = ptr::null_mut();
+        let mut error: *mut glib_sys::GError = ptr::null_mut();
 
         let mut pfd = libc::pollfd {
             fd: self.poll_fd,
@@ -607,7 +607,7 @@ impl VdoProvider {
             }
 
             if !error.is_null() {
-                vdo_sys::g_error_free(error);
+                glib_sys::g_error_free(error);
                 error = ptr::null_mut();
             }
         }
@@ -619,7 +619,7 @@ impl Drop for VdoProvider {
         unsafe {
             if !self.stream.is_null() {
                 vdo_sys::vdo_stream_stop(self.stream);
-                vdo_sys::g_object_unref(self.stream as *mut _);
+                gobject_sys::g_object_unref(self.stream as *mut _);
             }
         }
     }
@@ -627,14 +627,35 @@ impl Drop for VdoProvider {
 
 // ─── Metrics Output ─────────────────────────────────────────────────────
 
-fn write_metrics(fps: f64, latencies: &[f64]) {
-    let metrics = Metrics {
-        fps,
-        latencies_ms: latencies.to_vec(),
-    };
-    if let Ok(json) = serde_json::to_string_pretty(&metrics) {
-        let _ = std::fs::write(METRICS_PATH, json);
+fn read_self_memory() -> (u64, u64) {
+    let mut rss_kb = 0u64;
+    let mut peak_kb = 0u64;
+    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+        for line in status.lines() {
+            if line.starts_with("VmRSS:") {
+                rss_kb = line.split_whitespace().nth(1).and_then(|v| v.parse().ok()).unwrap_or(0);
+            } else if line.starts_with("VmHWM:") {
+                peak_kb = line.split_whitespace().nth(1).and_then(|v| v.parse().ok()).unwrap_or(0);
+            }
+        }
     }
+    (rss_kb, peak_kb)
+}
+
+fn write_metrics(fps: f64, latencies: &[f64]) {
+    let (rss_kb, peak_kb) = read_self_memory();
+    // Write JSON manually to avoid allocating for large latency vecs via serde
+    let mut f = match File::create(METRICS_PATH) {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+    let _ = write!(f, "{{\n  \"fps\": {:.1},\n  \"memory_rss_kb\": {},\n  \"memory_peak_kb\": {},\n  \"latencies_ms\": [",
+                   fps, rss_kb, peak_kb);
+    for (i, lat) in latencies.iter().enumerate() {
+        if i > 0 { let _ = write!(f, ", "); }
+        let _ = write!(f, "{:.1}", lat);
+    }
+    let _ = write!(f, "]\n}}\n");
 }
 
 // ─── Signal handling ────────────────────────────────────────────────────
@@ -712,9 +733,9 @@ fn main() {
 
         // Release VDO buffer
         unsafe {
-            let mut vdo_err: *mut vdo_sys::GError = ptr::null_mut();
+            let mut vdo_err: *mut glib_sys::GError = ptr::null_mut();
             vdo_sys::vdo_stream_buffer_unref(vdo.stream, &mut (vdo_buf as *mut _), &mut vdo_err);
-            if !vdo_err.is_null() { vdo_sys::g_error_free(vdo_err); }
+            if !vdo_err.is_null() { glib_sys::g_error_free(vdo_err); }
         }
 
         if !ok { continue; }

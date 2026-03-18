@@ -82,8 +82,13 @@ if lats:
 else:
     lat_p95 = 0
 
-mem_mb = round(${MEM_KB} / 1024, 1)
-mem_peak_mb = round(${MEM_PEAK_KB} / 1024, 1)
+# Self-reported memory from ACAP (in KB)
+rss_kb = app.get('memory_rss_kb', 0)
+peak_kb = app.get('memory_peak_kb', 0)
+mem_mb = round(rss_kb / 1024, 1)
+mem_peak_mb = round(peak_kb / 1024, 1)
+
+# CPU from /proc (may be 0 if permissions deny)
 cpu = float('${CPU_PCT}')
 threads = int('${THREADS}')
 

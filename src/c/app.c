@@ -599,7 +599,20 @@ static void write_metrics(double fps, const double *latencies, int num_latencies
     FILE *f = fopen(METRICS_PATH, "w");
     if (!f) return;
 
-    fprintf(f, "{\n  \"fps\": %.1f,\n  \"latencies_ms\": [", fps);
+    /* Read own memory from /proc/self/status */
+    long rss_kb = 0, peak_kb = 0;
+    FILE *status = fopen("/proc/self/status", "r");
+    if (status) {
+        char line[256];
+        while (fgets(line, sizeof(line), status)) {
+            if (strncmp(line, "VmRSS:", 6) == 0) sscanf(line + 6, "%ld", &rss_kb);
+            if (strncmp(line, "VmHWM:", 6) == 0) sscanf(line + 6, "%ld", &peak_kb);
+        }
+        fclose(status);
+    }
+
+    fprintf(f, "{\n  \"fps\": %.1f,\n  \"memory_rss_kb\": %ld,\n  \"memory_peak_kb\": %ld,\n  \"latencies_ms\": [",
+            fps, rss_kb, peak_kb);
     for (int i = 0; i < num_latencies; i++) {
         if (i > 0) fprintf(f, ", ");
         fprintf(f, "%.1f", latencies[i]);
