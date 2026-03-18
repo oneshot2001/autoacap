@@ -56,8 +56,13 @@ case $LANG in
         ;;
     rust)
         cd "${SCRIPT_DIR}/src/rust"
-        cargo-acap-build 2>&1 >&2
-        EAP_FILE=$(find target/acap -name "*.eap" 2>/dev/null | head -1)
+        docker build -t autoacap-rust . >&2 2>&1
+        # Extract .eap from Docker image
+        CONTAINER_ID=$(docker create autoacap-rust)
+        rm -rf /tmp/autoacap-build/
+        docker cp "${CONTAINER_ID}:/opt/app/" /tmp/autoacap-build/ 2>/dev/null || true
+        docker rm "${CONTAINER_ID}" >/dev/null 2>&1
+        EAP_FILE=$(find /tmp/autoacap-build -name "*.eap" 2>/dev/null | head -1)
         cd "${SCRIPT_DIR}"
         ;;
     *)
