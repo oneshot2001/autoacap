@@ -1,0 +1,19 @@
+commit	lang	fps	mAP	latency_p95	memory_mb	cpu_pct	binary_kb	status	description
+18b7724	c	15.0	0.0	91.5	0.0	0.0	4156	keep	baseline C implementation
+c26b8e1	c	30.0	0.0	58.3	0.0	0.0	4156	keep	increase VDO stream to 30 FPS
+e71d32b	c	52.2	0.0	40.8	0.0	0.0	4156	keep	push VDO stream to 60 FPS
+f92786a	c	51.8	0.0	41.0	0.0	0.0	4156	discard	uncapped VDO FPS — same as 60 FPS
+e877911	c	55.3	0.0	27.4	0.0	0.0	4156	keep	lower VDO to 320x240 — less preprocessing overhead
+b54943a	c	60.0	0.0	27.2	0.0	0.0	4156	keep	increase VDO buffer count from 2 to 4
+d54c28c	c	60.0	0.0	30.2	0.0	0.0	4157	discard	LTO compiler flags — no FPS gain, latency worse
+41b42a1	c	58.6	0.0	26.2	0.0	0.0	4157	discard	drain VDO queue keep latest — better latency but FPS dropped
+3897f4d	c	60.1	0.0	31.5	0.0	0.0	4156	discard	8 VDO buffers — no FPS gain, latency worse
+44f0993	c	60.0	0.0	30.7	0.0	0.0	4156	discard	tighter poll 100ms + metrics every 100 frames — no improvement
+7209bcd	c	60.0	0.0	27.4	0.0	0.0	4156	discard	remove syslog from hot loop — no improvement, DLPU is bottleneck
+5c95b25	rust	0	0.0	0	0.0	0.0	4270	INVALID	RUST BASELINE — WAS READING STALE C METRICS, binary crash-loops on camera
+0451cee	rust	0	0.0	0	0.0	0.0	4270	INVALID	zero-alloc — same issue, binary crash-loops, metrics were stale C data
+b189616	rust	0	0.0	0	0.0	0.0	4270	crash	threaded pipeline — crash-loops on startup
+76ba644	c	60.0	0.0	32.0	5.9	7.0	4155	keep	C with self-reported memory — 5.9MB RSS, 7% CPU
+76ba644	rust	0	0.0	0	0.0	0.0	4270	crash	Rust crashes on startup — all prior Rust scores were stale C data
+7bb60b4	c	60.0	0.0	31.7	6.0	0.0	4155	keep	10-min sustained: 6152KB constant, 0 crashes, 57 samples
+7bb60b4	rust	0	0.0	0	0.0	0.0	4270	crash	10-min sustained: immediate crash-loop, never ran

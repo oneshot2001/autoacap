@@ -1,0 +1,94 @@
+Building c variant...
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 615B done
+#1 WARN: InvalidBaseImagePlatform: Base image axisecp/acap-native-sdk:12.9.0-aarch64-ubuntu24.04 was pulled with platform "linux/amd64", expected "linux/arm64" for current build (line 5)
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/axisecp/acap-native-sdk:12.9.0-aarch64-ubuntu24.04
+#2 DONE 0.0s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.0s
+
+#4 [ 1/10] FROM docker.io/axisecp/acap-native-sdk:12.9.0-aarch64-ubuntu24.04@sha256:819393ba3e802bda239323d018c8ec02ae3aa52072bc9eeb5262ea95d9a468b4
+#4 resolve docker.io/axisecp/acap-native-sdk:12.9.0-aarch64-ubuntu24.04@sha256:819393ba3e802bda239323d018c8ec02ae3aa52072bc9eeb5262ea95d9a468b4 done
+#4 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 197B done
+#5 DONE 0.0s
+
+#6 [ 2/10] WORKDIR /opt/app
+#6 CACHED
+
+#7 [ 5/10] COPY manifest.json .
+#7 CACHED
+
+#8 [ 6/10] COPY LICENSE .
+#8 CACHED
+
+#9 [ 3/10] COPY app.c .
+#9 CACHED
+
+#10 [ 9/10] RUN . /opt/axis/acapsdk/environment-setup* &&     make
+#10 CACHED
+
+#11 [ 7/10] RUN mkdir -p model
+#11 CACHED
+
+#12 [ 8/10] COPY model/ model/
+#12 CACHED
+
+#13 [ 4/10] COPY Makefile .
+#13 CACHED
+
+#14 [10/10] RUN . /opt/axis/acapsdk/environment-setup* &&     acap-build . -m manifest.json -a model
+#14 CACHED
+
+#15 exporting to image
+#15 exporting layers done
+#15 exporting manifest sha256:4c1a33fb72ab22a1719106ae1ba5c8e3ca4c1d411c1f8eb3904ff31d76828821 done
+#15 exporting config sha256:5f5de10858d4360ce977502bad7106234be414c9494332f4fc25bb2e080e5180
+#15 exporting config sha256:5f5de10858d4360ce977502bad7106234be414c9494332f4fc25bb2e080e5180 done
+#15 exporting attestation manifest sha256:fc9ccf3b2a99d53084ca8638994db8a3e39ca14c09e5dfb10fe9cd496d41520a done
+#15 exporting manifest list sha256:47546585be6b1ee46ab8751d954829030ba286bb0af24056e1230cf1958c50b7 done
+#15 naming to docker.io/library/autoacap-c:latest done
+#15 unpacking to docker.io/library/autoacap-c:latest 0.0s done
+#15 DONE 0.1s
+
+ [33m1 warning found (use docker --debug to expand):
+[0m - InvalidBaseImagePlatform: Base image axisecp/acap-native-sdk:12.9.0-aarch64-ubuntu24.04 was pulled with platform "linux/amd64", expected "linux/arm64" for current build (line 5)
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/599af8ja4pyug3lg7lq69tuu8
+WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested
+Deploying to 192.168.1.33...
+Stopping existing autoacap if running...
+Error: 7Removing existing autoacap if installed...
+OK
+Deploying /tmp/autoacap-build/autoacap_0_1_0_aarch64.eap to 192.168.1.33 via VAPIX...
+Deployed successfully.
+Starting ACAP...
+Starting autoacap on 192.168.1.33...
+OK
+Started.
+Warming up for 15s...
+Starting 10-minute sustained test (sampling every 10s)...
+  [53s] FPS=60.0 RSS=6152KB Peak=6152KB Crashes=0
+  [117s] FPS=60.0 RSS=6152KB Peak=6152KB Crashes=0
+  [181s] FPS=60.0 RSS=6152KB Peak=6152KB Crashes=0
+  [244s] FPS=60.0 RSS=6152KB Peak=6152KB Crashes=0
+  [308s] FPS=60.0 RSS=6152KB Peak=6152KB Crashes=0
+  [372s] FPS=60.0 RSS=6152KB Peak=6152KB Crashes=0
+  [435s] FPS=60.0 RSS=6152KB Peak=6152KB Crashes=0
+  [499s] FPS=60.0 RSS=6152KB Peak=6152KB Crashes=0
+  [563s] FPS=60.0 RSS=6152KB Peak=6152KB Crashes=0
+
+=== SUSTAINED TEST COMPLETE ===
+Language: c
+Duration: 10 minutes
+Samples: 57
+Crashes: 0
+
