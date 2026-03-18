@@ -16,4 +16,7 @@ b189616	rust	0	0.0	0	0.0	0.0	4270	crash	threaded pipeline — crash-loops on sta
 76ba644	c	60.0	0.0	32.0	5.9	7.0	4155	keep	C with self-reported memory — 5.9MB RSS, 7% CPU
 76ba644	rust	0	0.0	0	0.0	0.0	4270	crash	Rust crashes on startup — all prior Rust scores were stale C data
 7bb60b4	c	60.0	0.0	31.7	6.0	0.0	4155	keep	10-min sustained: 6152KB constant, 0 crashes, 57 samples
-7bb60b4	rust	0	0.0	0	0.0	0.0	4270	crash	10-min sustained: immediate crash-loop, never ran
+7bb60b4	rust	0	0.0	0	0.0	0.0	4270	crash	10-min sustained: immediate crash-loop — binary never linked against liblarod/libvdo
+1df9d12	rust	15.0	0.0	92.0	7.0	0.0	4400	keep	RUST FIXED — first real run, 15 FPS (4x slower than C), 7MB RSS
+1df9d12	c	60.0	0.0	31.7	6.0	0.0	4155	keep	10-min sustained: 6152KB constant, 0 crashes, 57 samples
+1df9d12	rust	15.0	0.0	71.0	7.0	0.0	4400	keep	10-min sustained: 7184KB constant, 0 crashes, 57 samples — stable but 4x slower

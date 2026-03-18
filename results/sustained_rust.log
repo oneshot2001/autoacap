@@ -2,94 +2,92 @@ Building rust variant...
 #0 building with "desktop-linux" instance using docker driver
 
 #1 [internal] load build definition from Dockerfile
-#1 transferring dockerfile: 2.32kB done
+#1 transferring dockerfile: 2.41kB done
 #1 WARN: InvalidBaseImagePlatform: Base image axisecp/acap-native-sdk:12.9.0-aarch64-ubuntu24.04 was pulled with platform "linux/amd64", expected "linux/arm64" for current build (line 5)
 #1 DONE 0.0s
 
 #2 [internal] load metadata for docker.io/axisecp/acap-native-sdk:12.9.0-aarch64-ubuntu24.04
-#2 DONE 0.1s
+#2 DONE 0.0s
 
 #3 [internal] load .dockerignore
 #3 transferring context: 2B done
 #3 DONE 0.0s
 
-#4 [ 1/18] FROM docker.io/axisecp/acap-native-sdk:12.9.0-aarch64-ubuntu24.04@sha256:819393ba3e802bda239323d018c8ec02ae3aa52072bc9eeb5262ea95d9a468b4
-#4 resolve docker.io/axisecp/acap-native-sdk:12.9.0-aarch64-ubuntu24.04@sha256:819393ba3e802bda239323d018c8ec02ae3aa52072bc9eeb5262ea95d9a468b4 done
+#4 [internal] load build context
 #4 DONE 0.0s
 
-#5 [internal] load build context
-#5 transferring context: 228B done
+#5 [ 1/16] FROM docker.io/axisecp/acap-native-sdk:12.9.0-aarch64-ubuntu24.04@sha256:819393ba3e802bda239323d018c8ec02ae3aa52072bc9eeb5262ea95d9a468b4
+#5 resolve docker.io/axisecp/acap-native-sdk:12.9.0-aarch64-ubuntu24.04@sha256:819393ba3e802bda239323d018c8ec02ae3aa52072bc9eeb5262ea95d9a468b4 done
 #5 DONE 0.0s
 
-#6 [11/18] COPY manifest.json .
+#4 [internal] load build context
+#4 transferring context: 228B done
+#4 DONE 0.0s
+
+#6 [ 9/16] COPY manifest.json .
 #6 CACHED
 
-#7 [14/18] COPY model/ model/
+#7 [10/16] COPY LICENSE .
 #7 CACHED
 
-#8 [ 7/18] COPY Cargo.toml .
+#8 [ 2/16] RUN apt-get update && apt-get install -y --no-install-recommends     gcc g++ pkg-config libclang-dev clang     && rm -rf /var/lib/apt/lists/*
 #8 CACHED
 
-#9 [ 2/18] RUN apt-get update && apt-get install -y --no-install-recommends     gcc g++ pkg-config libclang-dev clang     && rm -rf /var/lib/apt/lists/*
+#9 [ 5/16] WORKDIR /opt/app
 #9 CACHED
 
-#10 [10/18] COPY src/ src/
+#10 [ 6/16] RUN . /opt/axis/acapsdk/environment-setup* &&     SYSROOT="${SDKTARGETSYSROOT}" &&     mkdir -p .cargo &&     printf '[target.aarch64-unknown-linux-gnu]\nlinker = "aarch64-linux-gnu-gcc"\nrustflags = [\n    "-C", "link-arg=--sysroot=%s",\n    "-C", "link-arg=-L%s/usr/lib",\n]\n\n[env]\nPKG_CONFIG_PATH = "%s/usr/lib/pkgconfig:%s/usr/share/pkgconfig"\nPKG_CONFIG_SYSROOT_DIR = "%s"\nPKG_CONFIG_ALLOW_CROSS = "1"\n'     "$SYSROOT" "$SYSROOT" "$SYSROOT" "$SYSROOT" "$SYSROOT"     > .cargo/config.toml
 #10 CACHED
 
-#11 [ 3/18] RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |     sh -s -- -y --default-toolchain stable --profile minimal
+#11 [13/16] RUN cargo build --release --target aarch64-unknown-linux-gnu 2>&1
 #11 CACHED
 
-#12 [ 5/18] WORKDIR /opt/app
+#12 [15/16] RUN echo 'all:' > Makefile && echo '	@true' >> Makefile
 #12 CACHED
 
-#13 [ 9/18] RUN cargo build --release --target aarch64-unknown-linux-gnu 2>&1 || true
+#13 [12/16] COPY model/ model/
 #13 CACHED
 
-#14 [13/18] RUN mkdir -p model
+#14 [ 7/16] COPY Cargo.toml .
 #14 CACHED
 
-#15 [17/18] RUN echo 'all:' > Makefile && echo '	@true' >> Makefile
+#15 [ 4/16] RUN rustup target add aarch64-unknown-linux-gnu
 #15 CACHED
 
-#16 [15/18] RUN cargo build --release --target aarch64-unknown-linux-gnu
+#16 [11/16] RUN mkdir -p model
 #16 CACHED
 
-#17 [ 6/18] RUN . /opt/axis/acapsdk/environment-setup* &&     SYSROOT="${SDKTARGETSYSROOT}" &&     mkdir -p .cargo &&     printf '[target.aarch64-unknown-linux-gnu]\nlinker = "aarch64-linux-gnu-gcc"\nrustflags = [\n    "-C", "link-arg=--sysroot=%s",\n    "-C", "link-arg=-L%s/usr/lib",\n]\n\n[env]\nPKG_CONFIG_PATH = "%s/usr/lib/pkgconfig:%s/usr/share/pkgconfig"\nPKG_CONFIG_SYSROOT_DIR = "%s"\nPKG_CONFIG_ALLOW_CROSS = "1"\n'     "$SYSROOT" "$SYSROOT" "$SYSROOT" "$SYSROOT" "$SYSROOT"     > .cargo/config.toml
+#17 [14/16] RUN cp target/aarch64-unknown-linux-gnu/release/autoacap .
 #17 CACHED
 
-#18 [ 4/18] RUN rustup target add aarch64-unknown-linux-gnu
+#18 [ 8/16] COPY src/ src/
 #18 CACHED
 
-#19 [12/18] COPY LICENSE .
+#19 [ 3/16] RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |     sh -s -- -y --default-toolchain stable --profile minimal
 #19 CACHED
 
-#20 [16/18] RUN cp target/aarch64-unknown-linux-gnu/release/autoacap .
+#20 [16/16] RUN . /opt/axis/acapsdk/environment-setup* &&     acap-build . -m manifest.json -a model
 #20 CACHED
 
-#21 [ 8/18] RUN mkdir -p src && echo 'fn main() {}' > src/main.rs
-#21 CACHED
-
-#22 [18/18] RUN . /opt/axis/acapsdk/environment-setup* &&     acap-build . -m manifest.json -a model
-#22 CACHED
-
-#23 exporting to image
-#23 exporting layers done
-#23 exporting manifest sha256:edd081f09f821163097d7fc55e838c4c615482668931b3e56ec288df89521b30 done
-#23 exporting config sha256:712c628737b7a65725c91ee26283d0ecd4f40ff289630c4de8e94e9477e0678f done
-#23 exporting attestation manifest sha256:414ffc156bc87ecb5a68aa7c9df77a9f7feb852b30d669fab9ae0c6293ff4ef5 done
-#23 exporting manifest list sha256:3ebf10630b8170a10ebcb7b7fc874afa7a34a544f6cf89a92f4a99d4f1c24bae done
-#23 naming to docker.io/library/autoacap-rust:latest done
-#23 unpacking to docker.io/library/autoacap-rust:latest 0.0s done
-#23 DONE 0.1s
+#21 exporting to image
+#21 exporting layers done
+#21 exporting manifest sha256:9d46150045e04f84b79e8b85ece31142220609e028f9a7f2d279fd1b2086d96b done
+#21 exporting config sha256:76529a319eec679dc4ee5803112f8ee090c711ef5eed631beeca231dd3b95b55 done
+#21 exporting attestation manifest sha256:fd0424c267dc1f136f6449244675d332644581c4f81679a906adcdba787871bb done
+#21 exporting manifest list sha256:6157d1186d38cbb9c09d441ee965ad5779167e4e3b1bbc03b258fc0c724ce7b5 done
+#21 naming to docker.io/library/autoacap-rust:latest done
+#21 unpacking to docker.io/library/autoacap-rust:latest 0.0s done
+#21 DONE 0.0s
 
  [33m1 warning found (use docker --debug to expand):
 [0m - InvalidBaseImagePlatform: Base image axisecp/acap-native-sdk:12.9.0-aarch64-ubuntu24.04 was pulled with platform "linux/amd64", expected "linux/arm64" for current build (line 5)
 
-View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/na77a5lp2z9pr3hwne2bjegwr
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/r1tudbhyiwc24ezvnh0px534p
 WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested
 Deploying to 192.168.1.33...
 Stopping existing autoacap if running...
-Error: 7Removing existing autoacap if installed...
+OK
+Removing existing autoacap if installed...
 OK
 Deploying /tmp/autoacap-build/autoacap_0_1_0_aarch64.eap to 192.168.1.33 via VAPIX...
 Deployed successfully.
@@ -98,4 +96,20 @@ Starting autoacap on 192.168.1.33...
 OK
 Started.
 Warming up for 15s...
-ACAP not running (status: Stopped). Aborting.
+Starting 10-minute sustained test (sampling every 10s)...
+  [53s] FPS=15.0 RSS=7184KB Peak=7184KB Crashes=0
+  [117s] FPS=15.0 RSS=7184KB Peak=7184KB Crashes=0
+  [181s] FPS=15.0 RSS=7184KB Peak=7184KB Crashes=0
+  [244s] FPS=15.0 RSS=7184KB Peak=7184KB Crashes=0
+  [308s] FPS=15.0 RSS=7184KB Peak=7184KB Crashes=0
+  [372s] FPS=15.0 RSS=7184KB Peak=7184KB Crashes=0
+  [436s] FPS=15.0 RSS=7184KB Peak=7184KB Crashes=0
+  [500s] FPS=15.0 RSS=7184KB Peak=7184KB Crashes=0
+  [563s] FPS=15.0 RSS=7184KB Peak=7184KB Crashes=0
+
+=== SUSTAINED TEST COMPLETE ===
+Language: rust
+Duration: 10 minutes
+Samples: 57
+Crashes: 0
+
